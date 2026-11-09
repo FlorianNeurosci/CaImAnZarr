@@ -67,7 +67,8 @@ def local_correlations_fft(Y,
                            eight_neighbours: bool = True,
                            swap_dim: bool = True,
                            opencv: bool = True,
-                           rolling_window=None) -> np.ndarray:
+                           rolling_window=None,
+                           overwrite_input: bool = False) -> np.ndarray:
     """Computes the correlation image for the input dataset Y using a faster FFT based method
 
     Args:
@@ -87,6 +88,10 @@ def local_correlations_fft(Y,
 
         rolling_window: (undocumented)
 
+        overwrite_input: Boolean
+            (claude_patched_caiman) work in Y itself when it is already float32, instead of
+            on a copy. Y is overwritten; the result is the same.
+
     Returns:
         Cn: d1 x d2 [x d3] matrix, cross-correlation with adjacent pixels
     """
@@ -94,7 +99,9 @@ def local_correlations_fft(Y,
     if swap_dim:
         Y = np.transpose(Y, tuple(np.hstack((Y.ndim - 1, list(range(Y.ndim))[:-1]))))
 
-    Y = Y.astype('float32')
+    # claude_patched_caiman (RAM): astype(copy=False) keeps a float32 input as it is, which
+    # is the array the copy would have equalled (same values, same memory layout)
+    Y = Y.astype('float32', copy=not overwrite_input)
     if rolling_window is None:
         Y -= np.mean(Y, axis=0)
         Ystd = np.std(Y, axis=0)
@@ -132,13 +139,18 @@ def local_correlations_fft(Y,
             sz = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype='float32')
 
     if opencv and Y.ndim == 3:
-        Yconv = np.stack([cv2.filter2D(img, -1, sz, borderType=0) for img in Y])
+        # claude_patched_caiman (RAM): fill one array frame by frame instead of stacking a list
+        # of frames (the list and the stacked copy were two movie-sized arrays at once)
+        Yconv = np.empty(Y.shape, dtype=np.float32)
+        for t, img in enumerate(Y):
+            Yconv[t] = cv2.filter2D(img, -1, sz, borderType=0)
         MASK = cv2.filter2D(np.ones(Y.shape[1:], dtype='float32'), -1, sz, borderType=0)
     else:
         Yconv = convolve(Y, sz[np.newaxis, :], mode='constant')
         MASK = convolve(np.ones(Y.shape[1:], dtype='float32'), sz, mode='constant')
 
-    YYconv = Yconv * Y
+    # claude_patched_caiman (RAM): the product goes into Yconv instead of a third array
+    YYconv = np.multiply(Yconv, Y, out=Yconv) if Yconv.dtype == Y.dtype else Yconv * Y
     del Y, Yconv
     if rolling_window is None:
         Cn = np.mean(YYconv, axis=0) / MASK

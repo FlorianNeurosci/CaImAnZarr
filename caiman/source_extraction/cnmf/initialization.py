@@ -1486,7 +1486,9 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
     tmp_data = np.copy(data_filtered)
     tmp_data[tmp_data < thresh_init * noise_pixel] = 0
     # compute correlation image
-    cn = caiman.summary_images.local_correlations_fft(tmp_data, swap_dim=False)
+    # claude_patched_caiman (RAM): tmp_data is a scratch copy, let the function work in it
+    cn = caiman.summary_images.local_correlations_fft(tmp_data, swap_dim=False,
+                                                      overwrite_input=True)
     del(tmp_data)
 #    cn[np.isnan(cn)] = 0  # remove abnormal pixels
 
@@ -1800,7 +1802,7 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
                 data_filtered_box[data_filtered_box <
                                   thresh_init * noise_box] = 0
                 cn_box = caiman.summary_images.local_correlations_fft(
-                    data_filtered_box, swap_dim=False)
+                    data_filtered_box, swap_dim=False, overwrite_input=True)
                 cn_box[np.isnan(cn_box) | (cn_box < 0)] = 0
                 cn[r_min:r_max, c_min:c_max] = cn_box[
                     (r_min - r2_min):(r_max - r2_min), (c_min - c2_min):(c_max - c2_min)]
@@ -1896,6 +1898,131 @@ def extract_ac(data_filtered, data_raw, ind_ctr, patch_dims):
     return ai, ci, True
 
 
+# claude_patched_caiman (RAM): helpers that let compute_W build the residual X without the
+# full-size temporaries of the original expressions. They give the same numbers, bit for bit:
+# every element goes through the same floating-point operations in the same order.
+
+_BLOCK_ROWS = 4096
+_BLOCK_FRAMES = 2048
+
+
+def _rows(Y, a, b):
+    """Y[a:b]: a view for numpy arrays and memmaps, a read for a zarr Yr."""
+    return Y[a:b]
+
+
+def _row_blocks(Y):
+    if isinstance(Y, caiman.zarr_store.ZarrYr):
+        return list(Y.row_blocks(_BLOCK_ROWS))
+    return [(a, min(a + _BLOCK_ROWS, Y.shape[0])) for a in range(0, Y.shape[0], _BLOCK_ROWS)]
+
+
+def _row_mean(Y):
+    """Y.mean(1). A zarr Yr is read in blocks of whole rows; numpy reduces each contiguous row
+    on its own, so this equals Y.mean(1) on the full array."""
+    if not isinstance(Y, caiman.zarr_store.ZarrYr):
+        return Y.mean(1)
+    out = None
+    for a, b in _row_blocks(Y):
+        m = _rows(Y, a, b).mean(1)
+        if out is None:
+            out = np.empty(Y.shape[0], dtype=m.dtype)
+        out[a:b] = m
+    return out
+
+
+def _dot_into(X, A, C):
+    """X[:] = A.dot(C). Dense A: np.dot with out=, the same BLAS call as A.dot(C) (computing
+    it in blocks would change the summation order inside OpenBLAS). CSR/CSC A: in blocks of
+    rows, which scipy computes row by row in the same order either way."""
+    if isinstance(A, np.ndarray):
+        np.dot(A, C, out=X)
+    else:
+        for a in range(0, A.shape[0], _BLOCK_ROWS):
+            b = min(a + _BLOCK_ROWS, A.shape[0])
+            X[a:b] = A[a:b].dot(C)
+
+
+def _dot_dtype(A, C):
+    """dtype of A.dot(C), or None if _dot_into cannot reproduce A.dot(C) for these types."""
+    if not isinstance(C, np.ndarray) or C.ndim != 2:
+        return None
+    if isinstance(A, np.ndarray):
+        if A.ndim != 2:
+            return None
+    elif not (scipy.sparse.issparse(A) and A.format in ('csr', 'csc')):
+        return None
+    if A.dtype.kind != 'f' or C.dtype.kind != 'f':
+        return None
+    return np.result_type(A.dtype, C.dtype)
+
+
+def _residual_lean(Y, A, C, b0):
+    """Y - A.dot(C) - b0[:, None], as compute_W writes it for ssub = tsub = 1.
+
+    A.dot(C) goes straight into the output X, then Y is subtracted in place one block of rows
+    at a time, then b0: the order in which the original expression evaluates. Peak memory is X
+    plus one block of Y, against A.dot(C), Y - A.dot(C) and all of Y before. Returns None when
+    the dtypes would make the in-place version differ from the original."""
+    dt_ac = _dot_dtype(A, C)
+    if dt_ac is None:
+        return None
+    dt_x = np.result_type(np.result_type(Y.dtype, dt_ac), b0.dtype)
+    if dt_ac != dt_x:
+        return None
+    X = np.empty((Y.shape[0], C.shape[1]), dtype=dt_x)
+    _dot_into(X, A, C)
+    for a, b in _row_blocks(Y):
+        np.subtract(_rows(Y, a, b), X[a:b], out=X[a:b])
+        X[a:b] -= b0[a:b, None]
+    return X
+
+
+def _residual_lean_ds(Y, A, C, b0, ds_mat, tsub):
+    """decimate_last_axis(ds(Y), tsub) - ds(A).dot(decimate_last_axis(C, tsub)) - ds(b0),
+    as compute_W writes it for ssub > 1 or tsub > 1, built like _residual_lean.
+
+    The downsampled movie is made one block of frames at a time (blocks are whole multiples of
+    tsub). ds is a sparse product applied to each frame on its own and decimate_last_axis
+    averages within groups of tsub frames, so the blocks hold the same numbers as the full
+    product. Returns None when the dtypes would make the in-place version differ."""
+    ds = (lambda x: ds_mat.dot(x)) if ds_mat is not None else (lambda x: x)
+    dsb0 = ds(b0).reshape((-1, 1), order='F')
+    dt_y = Y.dtype if ds_mat is None else np.result_type(ds_mat.dtype, Y.dtype)
+    if A.size > 0:
+        Cd = decimate_last_axis(C, tsub)
+        dsA = ds(A)
+        dt_ac = _dot_dtype(dsA, Cd)
+        if dt_ac is None:
+            return None
+        dt_x = np.result_type(np.result_type(dt_y, dt_ac), dsb0.dtype)
+        if dt_ac != dt_x:
+            return None
+    else:
+        dt_x = np.result_type(dt_y, dsb0.dtype)
+        if dt_y != dt_x:
+            return None
+    T = Y.shape[1]
+    X = np.empty((dsb0.shape[0], T // tsub + (T % tsub > 0)), dtype=dt_x)
+    if A.size > 0:
+        _dot_into(X, dsA, Cd)
+    if isinstance(Y, caiman.zarr_store.ZarrYr):
+        blocks = list(Y.time_blocks(multiple_of=tsub))
+    else:
+        step = tsub * max(1, _BLOCK_FRAMES // tsub)
+        blocks = [(t, min(t + step, T)) for t in range(0, T, step)]
+    for t0, t1 in blocks:
+        D = decimate_last_axis(ds(Y[:, t0:t1]), tsub)
+        q0 = t0 // tsub
+        q1 = q0 + D.shape[1]
+        if A.size > 0:
+            np.subtract(D, X[:, q0:q1], out=X[:, q0:q1])
+        else:
+            X[:, q0:q1] = D
+    X -= dsb0
+    return X
+
+
 @profile
 def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, parallel=False):
     """compute background according to ring model
@@ -1937,9 +2064,7 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
         # no parallelization over pixels if already processing patches in parallel
         parallel = False
 
-    if isinstance(Y, caiman.zarr_store.ZarrYr):
-        # claude_patched_caiman (zarr): the ring model needs the whole residual in memory
-        Y = np.asarray(Y)
+    zarr_Y = isinstance(Y, caiman.zarr_store.ZarrYr)  # claude_patched_caiman (zarr)
 
     T = Y.shape[1]
     d1 = (dims[0] - 1) // ssub + 1
@@ -1956,7 +2081,7 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
         inside = (x >= 0) * (x < d1) * (y >= 0) * (y < d2)
         return x[inside] + y[inside] * d1
 
-    b0 = np.array(Y.mean(1)) - A.dot(C.mean(1))
+    b0 = np.array(_row_mean(Y)) - A.dot(C.mean(1))
 
     if ssub > 1:
         ds_mat = caiman.source_extraction.cnmf.utilities.decimation_matrix(dims, ssub)
@@ -1965,12 +2090,19 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
         ds = lambda x: x
 
     if data_fits_in_memory:
+        # claude_patched_caiman (RAM): build the residual X in one (pixels, frames) buffer
+        # instead of holding A.dot(C), Y - A.dot(C) and the whole of Y at the same time.
         if ssub == 1 and tsub == 1:
-            X = Y - A.dot(C) - b0[:, None]
+            X = _residual_lean(Y, A, C, b0)
+            if X is None:
+                X = np.asarray(Y) - A.dot(C) - b0[:, None]
         else:
-            X = decimate_last_axis(ds(Y), tsub) - \
-                (ds(A).dot(decimate_last_axis(C, tsub)) if A.size > 0 else 0) - \
-                ds(b0).reshape((-1, 1), order='F')
+            X = _residual_lean_ds(Y, A, C, b0, ds_mat if ssub > 1 else None, tsub)
+            if X is None:
+                Y = np.asarray(Y)
+                X = decimate_last_axis(ds(Y), tsub) - \
+                    (ds(A).dot(decimate_last_axis(C, tsub)) if A.size > 0 else 0) - \
+                    ds(b0).reshape((-1, 1), order='F')
 
         def process_pixel(p):
             index = get_indices_of_pixels_on_ring(p)
@@ -1981,6 +2113,8 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
             data = pd_solve(tmp, B.dot(tmp2))
             return index, data
     else:
+        if zarr_Y:
+            Y = np.asarray(Y)  # this branch indexes Y once per pixel
 
         def process_pixel(p):
             index = get_indices_of_pixels_on_ring(p)
