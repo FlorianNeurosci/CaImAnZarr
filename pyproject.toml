@@ -15,49 +15,61 @@ readme = "README.md"
 dynamic = ["classifiers", "keywords", "license", "scripts", "version"]
 dependencies = [
   "av",
-  "bokeh >= 3.1.1",
-  "coverage",
-  "cython",
+  "certifi",
   "h5py >= 3.4.0",
-  "holoviews >= 1.16.2",
-  "ipykernel",
-  "ipython",
   "ipyparallel",
+  "ipython",
   "ipywidgets",
-  "keras",
   "matplotlib",
-  "moviepy",
-  "mypy",
   "numpy",
-  "numpydoc",
   "opencv-python",
-  "panel >= 1.0.2",
   "peakutils >= 1.3.5",
   "pims",
   "psutil",
-  "pynwb",
-  "pyside6",
-  "pytest",
-  "pytest-cov",
-  "setuptools",
-  "torch",
   "scikit-image >= 0.19.0, != 0.26.0",
   "scikit-learn >= 1.2",
   "scipy >= 1.10.1",
-  "torchvision",
+  "setuptools",
   "tifffile",
   "tqdm",
-  "yapf",
   "zarr >= 3"
 ]
 
+# CaImAnZarr: the default install covers `import caiman`, motion correction and CNMF / CNMF-E.
+# The heavy packages upstream installs by default are extras; `caiman[all]` gives upstream's full set.
 [project.optional-dependencies]
+dl = [            # CNN component classifiers, VolPy, OnACID ring-CNN background
+  "keras",
+  "torch",
+  "torchvision"
+]
+viz = [           # interactive plots, movie playback and export
+  "bokeh >= 3.1.1",
+  "holoviews >= 1.16.2",
+  "moviepy",
+  "panel >= 1.0.2",
+  "pyside6"
+]
+nwb = [
+  "pynwb"
+]
+dev = [
+  "coverage",
+  "cython",
+  "mypy",
+  "numpydoc",
+  "pytest",
+  "pytest-cov",
+  "yapf"
+]
 jupyter = [
+  "ipykernel",
   "jupyter",
   "jupyter_bokeh",
   "pyqtgraph",
   "tk"
 ]
+all = ["caiman[dl,viz,nwb,dev,jupyter]"]
 
 [build-system]
 requires = ["cython", "numpy", "setuptools", "wheel"]
