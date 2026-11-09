@@ -50,7 +50,10 @@ from caiman.source_extraction.cnmf.pre_processing import get_noise_fft
 from caiman.source_extraction.cnmf.utilities import (update_order, peak_local_max, decimation_matrix,
                         gaussian_filter, uniform_filter)
 import caiman.summary_images
-from caiman.utils.nn_models import (fit_NL_model, create_LN_model, quantile_loss, rate_scheduler)
+try:
+    from caiman.utils.nn_models import (fit_NL_model, create_LN_model, quantile_loss, rate_scheduler)
+except ImportError:  # keras/torch are optional (pip install caiman[dl]); only the ring-CNN background of OnACID needs them
+    fit_NL_model = create_LN_model = quantile_loss = rate_scheduler = None
 from caiman.utils.stats import pd_solve
 from caiman.utils.utils import save_dict_to_hdf5, load_dict_from_hdf5, parmap, hdf5_runmode
 
@@ -63,7 +66,10 @@ os.environ["KERAS_BACKEND"] = "torch"
 try:
     import keras_core as keras
 except ImportError:
-    import keras
+    try:
+        import keras
+    except ImportError:  # optional dependency (pip install caiman[dl]); only the functions that use it need it
+        keras = None
 
 #TODO If we ever get a chance, it would make sense to refactor CNMF and OnACID to have a
 #     parent class, as OnACID started as a copy of the CNMF codebase and they have similar

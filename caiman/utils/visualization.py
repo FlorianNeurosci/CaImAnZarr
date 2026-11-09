@@ -6,7 +6,10 @@
 import base64
 import cv2
 import functools as fct
-import holoviews
+try:
+    import holoviews
+except ImportError:  # optional dependency (pip install caiman[viz]); only the functions that use it need it
+    holoviews = None
 from IPython.display import HTML
 from math import sqrt, ceil
 import matplotlib

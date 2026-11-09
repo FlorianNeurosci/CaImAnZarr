@@ -10,7 +10,10 @@ import pickle
 import scipy
 from scipy.sparse import csc_matrix
 from scipy.stats import norm
-import torch
+try:
+    import torch
+except ImportError:  # optional dependency (pip install caiman[dl]); only the functions that use it need it
+    torch = None
 from typing import Any, Optional, Union
 import warnings
 
@@ -34,7 +37,10 @@ os.environ["KERAS_BACKEND"] = "torch"
 try:
     import keras_core as keras
 except ImportError:
-    import keras
+    try:
+        import keras
+    except ImportError:  # optional dependency (pip install caiman[dl]); only the functions that use it need it
+        keras = None
 
 @profile
 def compute_event_exceptionality(traces: np.ndarray,

@@ -11,7 +11,10 @@ os.environ["KERAS_BACKEND"] = "torch"
 try:
     import keras_core as keras
 except ImportError:
-    import keras
+    try:
+        import keras
+    except ImportError:  # optional dependency (pip install caiman[dl]); only the functions that use it need it
+        keras = None
 
 
 def keras_cnn_model_from_pickle(pickle_data, keras):

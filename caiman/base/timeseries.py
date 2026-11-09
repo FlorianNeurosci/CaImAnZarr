@@ -12,9 +12,12 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from pynwb import NWBHDF5IO, NWBFile
-from pynwb.ophys import TwoPhotonSeries, OpticalChannel
-from pynwb.device import Device
+try:
+    from pynwb import NWBHDF5IO, NWBFile
+    from pynwb.ophys import TwoPhotonSeries, OpticalChannel
+    from pynwb.device import Device
+except ImportError:  # optional dependency (pip install caiman[nwb]); only the functions that use it need it
+    NWBHDF5IO = NWBFile = TwoPhotonSeries = OpticalChannel = Device = None
 import pickle as cpk
 from scipy.io import savemat
 import tifffile

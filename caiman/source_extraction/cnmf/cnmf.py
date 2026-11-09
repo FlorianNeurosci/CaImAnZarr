@@ -23,7 +23,10 @@ import numpy as np
 import os
 import pathlib
 import psutil
-import pynwb
+try:
+    import pynwb
+except ImportError:  # optional dependency (pip install caiman[nwb]); only the functions that use it need it
+    pynwb = None
 import scipy
 import sys
 import time

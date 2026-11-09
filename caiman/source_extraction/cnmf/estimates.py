@@ -1,16 +1,23 @@
 #!/usr/bin/env python
 
-import bokeh
+try:
+    import bokeh
+except ImportError:  # optional dependency (pip install caiman[viz]); only the functions that use it need it
+    bokeh = None
 import cv2
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from pynwb import NWBHDF5IO, TimeSeries, NWBFile
-from pynwb.base import Images
-from pynwb.image import GrayscaleImage
-from pynwb.ophys import ImageSegmentation, Fluorescence, OpticalChannel, ImageSeries
-from pynwb.device import Device
+try:
+    from pynwb import NWBHDF5IO, TimeSeries, NWBFile
+    from pynwb.base import Images
+    from pynwb.image import GrayscaleImage
+    from pynwb.ophys import ImageSegmentation, Fluorescence, OpticalChannel, ImageSeries
+    from pynwb.device import Device
+except ImportError:  # optional dependency (pip install caiman[nwb]); only the functions that use it need it
+    NWBHDF5IO = TimeSeries = NWBFile = Images = GrayscaleImage = None
+    ImageSegmentation = Fluorescence = OpticalChannel = ImageSeries = Device = None
 import scipy.sparse
 import time
 import uuid

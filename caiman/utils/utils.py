@@ -28,7 +28,10 @@ import ssl
 import subprocess
 from tifffile import TiffFile
 import time
-import torch
+try:
+    import torch
+except ImportError:  # optional dependency (pip install caiman[dl]); only the functions that use it need it
+    torch = None
 from typing import Any, Union, Iterable
 from urllib.request import urlopen
 
