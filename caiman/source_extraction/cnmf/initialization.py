@@ -8,6 +8,7 @@ different set of methods like ICA PCA, greedy roi
 
 import cv2
 import logging
+import multiprocessing
 from math import sqrt
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
@@ -2023,8 +2024,36 @@ def _residual_lean_ds(Y, A, C, b0, ds_mat, tsub):
     return X
 
 
+# claude_patched_caiman (speed): the per-pixel ring regression of compute_W in forked
+# processes. Each pixel runs the same code as in the serial loop (with the same single-threaded
+# BLAS), and the results come back in pixel order, so W is identical to the serial result.
+
+_PIXEL_FN = None
+_PIXEL_BLOCK = 512
+
+
+def _pixel_block(bounds):
+    a, b = bounds
+    return [_PIXEL_FN(p) for p in range(a, b)]
+
+
+def _map_pixels_forked(process_pixel, n_pixels, n_processes):
+    """[process_pixel(p) for p in range(n_pixels)] in n_processes forked workers.
+    The function is a closure, so it reaches the workers by fork, not by pickling."""
+    global _PIXEL_FN
+    _PIXEL_FN = process_pixel
+    blocks = [(a, min(a + _PIXEL_BLOCK, n_pixels)) for a in range(0, n_pixels, _PIXEL_BLOCK)]
+    try:
+        with multiprocessing.get_context('fork').Pool(n_processes) as pool:
+            parts = pool.map(_pixel_block, blocks, chunksize=1)
+    finally:
+        _PIXEL_FN = None
+    return [r for part in parts for r in part]
+
+
 @profile
-def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, parallel=False):
+def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, parallel=False,
+              n_processes=None):
     """compute background according to ring model
     solves the problem
         min_{W,b0} ||X-W*X|| with X = Y - A*C - b0*1'
@@ -2052,6 +2081,10 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
             temporal downscale factor
         parallel: bool
             If true, use multiprocessing to process pixels in parallel
+
+        n_processes: int or None
+            (claude_patched_caiman) with parallel=True: number of forked worker processes, given
+            blocks of pixels. None keeps CaImAn's parmap (one process per CPU, one pixel at a time).
 
     Returns:
         W: scipy.sparse.csr_matrix (pixels x pixels)
@@ -2135,7 +2168,11 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
             data = pd_solve(tmp, B.dot(tmp2))
             return index, data
 
-    Q = list((parmap if parallel else map)(process_pixel, range(d1 * d2)))
+    if parallel and n_processes is not None and n_processes > 1 and \
+            'fork' in multiprocessing.get_all_start_methods():
+        Q = _map_pixels_forked(process_pixel, d1 * d2, n_processes)
+    else:
+        Q = list((parmap if parallel else map)(process_pixel, range(d1 * d2)))
     indices, data = np.array(Q, dtype=object).T
     indptr = np.concatenate([[0], np.cumsum(list(map(len, indices)))])
     indices = np.concatenate(indices)

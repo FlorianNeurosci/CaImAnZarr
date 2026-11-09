@@ -527,11 +527,15 @@ class CNMF(object):
                         self.merge_comps(Yr, mx=np.inf, fast_merge=True)
 
                     if self.params.get('init', 'nb') == 0:
+                        # claude_patched_caiman (speed): the per-pixel ring fit over the whole
+                        # FOV in n_processes forked workers (same result as the serial loop)
+                        n_proc = self.params.get('patch', 'n_processes') or 1
                         self.estimates.W, self.estimates.b0 = compute_W(
                             Yr, self.estimates.A.toarray(), self.estimates.C, self.dims,
                             self.params.get('init', 'ring_size_factor') *
                             self.params.get('init', 'gSiz')[0],
-                            ssub=self.params.get('init', 'ssub_B'))
+                            ssub=self.params.get('init', 'ssub_B'),
+                            parallel=n_proc > 1, n_processes=n_proc)
 
                     if len(self.estimates.C):
                         self.deconvolve()
