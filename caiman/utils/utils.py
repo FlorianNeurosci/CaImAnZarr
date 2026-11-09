@@ -427,7 +427,7 @@ def recursively_save_dict_contents_to_group(h5file:h5py.File, path:str, dic:dict
     for key, item in dic.items():
         key = str(key)
         #Fix: Add a check to skip non-serializable PyTorch bojects
-        if isinstance(item, torch.device) or isinstance(item, torch.nn.Module):
+        if torch is not None and (isinstance(item, torch.device) or isinstance(item, torch.nn.Module)):
             logger.info(f"Skipping key '{key}' or non-serializable type {type(item)}")
             continue
         if key == 'provenance':
