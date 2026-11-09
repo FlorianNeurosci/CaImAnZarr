@@ -70,7 +70,8 @@ def cnmf_patches(args_in):
     #FIXME Fix in-function imports
     from caiman.source_extraction.cnmf import CNMF
     logger = logging.getLogger("caiman")
-    file_name, idx_, shapes, params = args_in
+    file_name, idx_, shapes, params = args_in[:4]
+    seeds = args_in[4] if len(args_in) > 4 else None  # claude_patched_caiman (seeding)
 
     name_log = os.path.basename(
         file_name[:-5]) + '_LOG_ ' + str(idx_[0]) + '_' + str(idx_[-1])
@@ -95,6 +96,15 @@ def cnmf_patches(args_in):
     # insert slice for timesteps, equivalent to :
     slices.insert(0, slice(timesteps))
 
+    if seeds is not None:
+        # claude_patched_caiman (seeding): this patch's share of the whole-FOV seeds, in patch
+        # coordinates; a patch with none has nothing to initialise
+        r0, r1, c0, c1 = slices[1].start, slices[1].stop, slices[2].start, slices[2].stop
+        inside = (seeds[:, 0] >= r0) & (seeds[:, 0] < r1) & (seeds[:, 1] >= c0) & (seeds[:, 1] < c1)
+        seeds_local = (seeds[inside] - np.array([r0, c0])).astype(float)
+        if len(seeds_local) == 0:
+            return None
+
     if zarr_input:
         # reads only this patch's pixels; same values and layout as the in_memory copy below
         # (a zarr store cannot be viewed lazily, so in_memory=False also reads the patch)
@@ -110,7 +120,11 @@ def cnmf_patches(args_in):
 
     if (np.sum(np.abs(np.diff(images.reshape(timesteps, -1).T)))) > 0.1:
 
-        opts = copy(params)
+        # claude_patched_caiman (seeding): with seeds each patch gets its own copy of the
+        # parameters, so no patch sees settings a previous patch in its chunk changed
+        opts = deepcopy(params) if seeds is not None else copy(params)
+        if seeds is not None:
+            opts.set('init', {'seed_method': seeds_local})
         opts.set('patch', {'n_processes': 1, 'rf': None, 'stride': None})
         for group in ('init', 'temporal', 'spatial'):
             opts.set(group, {'nb': params.get('patch', 'nb_patch')})
@@ -130,7 +144,7 @@ def cnmf_patches(args_in):
 
 def run_CNMF_patches(file_name, shape, params, gnb=1, dview=None,
                      memory_fact=1, border_pix=0, low_rank_background=True,
-                     del_duplicates=False, indices=[slice(None)]*3):
+                     del_duplicates=False, indices=[slice(None)]*3, seeds=None):
     """Function that runs CNMF in patches
 
      Either in parallel or sequentially, and return the result for each.
@@ -228,7 +242,7 @@ def run_CNMF_patches(file_name, shape, params, gnb=1, dview=None,
     patch_centers = []
     for id_f, id_2d in zip(idx_flat, idx_2d):
         #        print(id_2d)
-        args_in.append((file_name, id_f, id_2d, params_copy))
+        args_in.append((file_name, id_f, id_2d, params_copy) + ((seeds,) if seeds is not None else ()))
         if del_duplicates:
             foo = np.zeros(d, dtype=bool)
             foo[id_f] = 1

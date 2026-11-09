@@ -24,6 +24,7 @@ import sys
 import warnings
 
 import caiman
+import caiman.source_extraction.cnmf.seeding
 from caiman.source_extraction.cnmf.deconvolution import constrained_foopsi
 from caiman.source_extraction.cnmf.pre_processing import get_noise_fft, get_noise_welch
 from caiman.source_extraction.cnmf.spatial import circular_constraint, connectivity_constraint
@@ -148,7 +149,8 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
                           center_psf=False, ssub_B=2, init_iter=2, remove_baseline = True,
                           SC_kernel='heat', SC_sigma=1, SC_thr=0, SC_normalize=True, SC_use_NN=False,
                           SC_nnn=20, lambda_gnmf=1, snmf_l1_ratio:float=0.0,
-                          greedyroi_nmf_init_method:str='nndsvdar', greedyroi_nmf_max_iter:int=200):
+                          greedyroi_nmf_init_method:str='nndsvdar', greedyroi_nmf_max_iter:int=200,
+                          mixture_seeding=False):
     """
     Initialize components. This function initializes the spatial footprints, temporal components,
     and background which are then further refined by the CNMF iterations. There are four
@@ -344,7 +346,8 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
         Ain, Cin, _, b_in, f_in, extra_1p = greedyROI_corr(
             Y, Y_ds, max_number=K, gSiz=gSiz[0], gSig=gSig[0], min_corr=min_corr, min_pnr=min_pnr,
             ring_size_factor=ring_size_factor, center_psf=center_psf, options=options_total,
-            sn=sn, nb=nb, ssub=ssub, ssub_B=ssub_B, init_iter=init_iter, seed_method=seed_method)
+            sn=sn, nb=nb, ssub=ssub, ssub_B=ssub_B, init_iter=init_iter, seed_method=seed_method,
+            mixture_seeding=mixture_seeding)
 
     elif method == 'sparse_nmf':
         Ain, Cin, _, b_in, f_in = sparseNMF(
@@ -1159,7 +1162,7 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
                    min_corr=None, min_pnr=None, seed_method='auto',
                    min_pixel=3, bd=0, thresh_init=2, ring_size_factor=None, nb=1, options=None,
                    sn=None, save_video=False, video_name='initialization.mp4', ssub=1,
-                   ssub_B=2, init_iter=2):
+                   ssub_B=2, init_iter=2, mixture_seeding=False):
     """
     initialize neurons based on pixels' local correlations and peak-to-noise ratios.
 
@@ -1212,7 +1215,8 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
         min_pnr=min_pnr * np.sqrt(np.size(Y) / np.size(Y_ds)),
         seed_method=seed_method, deconvolve_options=o,
         min_pixel=min_pixel, bd=bd, thresh_init=thresh_init,
-        swap_dim=True, save_video=save_video, video_name=video_name)
+        swap_dim=True, save_video=save_video, video_name=video_name,
+        mixture_seeding=mixture_seeding)
 
     dims = Y.shape[:2]
     T = Y.shape[-1]
@@ -1258,7 +1262,9 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
 
         # find more neurons in residual
         # print('Compute Residuals')
-        for i in range(init_iter - 1):
+        # claude_patched_caiman (seeding): with mixture seeding the seed set is fixed, and
+        # minicnmfe makes one greedy pass over it, so there is no residual search round
+        for i in range(0 if mixture_seeding else init_iter - 1):
             if max_number is not None:
                 max_number -= A.shape[-1]
             if max_number != 0:
@@ -1384,7 +1390,7 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
                           seed_method='auto', deconvolve_options=None,
                           min_pixel=3, bd=1, thresh_init=2, swap_dim=True,
                           save_video=False, video_name='initialization.mp4',
-                          background_filter='disk'):
+                          background_filter='disk', mixture_seeding=False):
     """
     using greedy method to initialize neurons by selecting pixels with large
     local correlation and large peak-to-noise ratio
@@ -1497,6 +1503,14 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
     data_raw = data_raw.copy()
 
     # screen seed pixels as neuron centers
+    if mixture_seeding:
+        # claude_patched_caiman (seeding): seed only at minicnmfe's mixture seeds (given as an
+        # array in seed_method, chosen on the whole field of view by CNMF.fit; computed here
+        # when none were given) and let no threshold gate them
+        if isinstance(seed_method, str):
+            g = gSig[0] if isinstance(gSig, (list, tuple)) else (gSig or gSiz / 4.)
+            seed_method = caiman.source_extraction.cnmf.seeding.mixture_seeds(cn, pnr, g)
+        min_corr, min_pnr = 0., 0.
     v_search = cn * pnr
     v_search[(cn < min_corr) | (pnr < min_pnr)] = 0
     ind_search = (v_search <= 0)  # indicate whether the pixel has
@@ -1660,8 +1674,11 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
         for ith_seed, idx in enumerate(ind_local_max):
             r = rsub_max[idx]
             c = csub_max[idx]
+            was_marked = ind_search[r, c]
             ind_search[r, c] = True  # this pixel won't be searched
-            if v_search[r, c] < min_v_search:
+            # claude_patched_caiman (seeding): with no threshold, a seed inside an accepted
+            # neuron (or on the border) is skipped explicitly, as minicnmfe does
+            if v_search[r, c] < min_v_search or (mixture_seeding and was_marked):
                 # skip this pixel if it's not sufficient for being a seed pixel
                 continue
 

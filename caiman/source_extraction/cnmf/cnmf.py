@@ -487,6 +487,15 @@ class CNMF(object):
             #import code
             #code.interact(local=dict(globals(), **locals()) )
 
+            # claude_patched_caiman (seeding): minicnmfe's seeds, chosen once on the whole FOV
+            seeds = None
+            if (self.params.get('init', 'mixture_seeding')
+                    and self.params.get('init', 'method_init') == 'corr_pnr'):
+                from caiman.source_extraction.cnmf.seeding import global_mixture_seeds
+                seeds = global_mixture_seeds(images, self.params.get('init', 'gSig'),
+                                             center_psf=self.params.get('init', 'center_psf'))
+                self.estimates.mixture_seeds = seeds
+
             self.estimates.A, self.estimates.C, self.estimates.YrA, self.estimates.b, self.estimates.f, \
                 self.estimates.sn, self.estimates.optional_outputs = run_CNMF_patches(
                     images.filename, self.dims + (T,), self.params,
@@ -494,7 +503,7 @@ class CNMF(object):
                     gnb=self.params.get('init', 'nb'), border_pix=self.params.get('patch', 'border_pix'),
                     low_rank_background=self.params.get('patch', 'low_rank_background'),
                     del_duplicates=self.params.get('patch', 'del_duplicates'),
-                    indices=indices)
+                    indices=indices, seeds=seeds)
 
             #print("D: Finished with run_CNMF_patches(), self.estimates.* are populated. Next step would be update_temporal() but first: Entering a shell.")
             #code.interact(local=dict(globals(), **locals()) )

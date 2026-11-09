@@ -271,6 +271,12 @@ class CNMFParams(object):
             rolling_sum: bool, default: True
                 use rolling sum (as opposed to full sum) for determining candidate centroids during greedy_roi
 
+            mixture_seeding: bool, default: False
+                (claude_patched_caiman) corr_pnr initialization seeds only at pixels chosen as in
+                minicnmfe: local maxima of the smoothed corr*PNR image kept by a two-component
+                mixture on their log heights, fitted once on the whole field of view. min_corr and
+                min_pnr then do not gate seeding, and the residual search round is skipped.
+
             seed_method: str {'auto', 'manual', 'semi'}
                 methods for choosing seed pixels during greedy_roi or corr_pnr initialization
                 'semi' detects nr components automatically and allows to add more manually
@@ -745,6 +751,7 @@ class CNMFParams(object):
             'ring_size_factor': ring_size_factor,
             'rolling_length': rolling_length,
             'rolling_sum': rolling_sum,
+            'mixture_seeding': False,    # claude_patched_caiman: minicnmfe seed selection
             'seed_method': 'auto',
             'sigma_smooth_snmf': (.5, .5, .5),
             'ssub': ssub,             # spatial downsampling factor
