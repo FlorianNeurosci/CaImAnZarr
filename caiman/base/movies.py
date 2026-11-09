@@ -36,6 +36,7 @@ import caiman.mmapping
 import caiman.summary_images
 import caiman.utils.sbx_utils
 import caiman.utils.visualization
+import caiman.zarr_store
 
 try:
     cv2.setNumThreads(0)
@@ -1767,6 +1768,9 @@ def get_file_size(file_name, var_name_hdf5:str='mov') -> tuple[tuple, Union[int,
                 filename = os.path.split(file_name)[-1]
                 Yr, dims, T = caiman.mmapping.load_memmap(os.path.join(
                         os.path.split(file_name)[0], filename))
+            elif extension == '.zarr' and caiman.zarr_store.is_caiman_zarr(file_name):
+                # claude_patched_caiman (zarr): a store written by caiman.save_zarr
+                Yr, dims, T = caiman.zarr_store.load_zarr(file_name)
             elif extension in ('.h5', '.hdf5', '.mat', '.nwb', '.n5', '.zarr'):
                 # FIXME this doesn't match the logic in load()
                 if extension in ('.n5', '.zarr'): # Thankfully, the zarr library lines up closely with h5py past the initial open

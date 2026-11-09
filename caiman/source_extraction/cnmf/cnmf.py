@@ -41,6 +41,7 @@ from caiman.source_extraction.cnmf.params import CNMFParams
 from caiman.source_extraction.cnmf.pre_processing import preprocess_data
 from caiman.source_extraction.cnmf.spatial import update_spatial_components
 from caiman.source_extraction.cnmf.temporal import update_temporal_components, constrained_foopsi_parallel
+from caiman.zarr_store import ZarrImages, ZarrYr, is_zarr_path, load_zarr
 from caiman.source_extraction.cnmf.utilities import update_order
 from caiman.utils.utils import save_dict_to_hdf5, load_dict_from_hdf5, hdf5_runmode
 
@@ -223,6 +224,12 @@ class CNMF(object):
         self.provenance.append({'event': 'fit_file', 'time': int(time.time()), 'description': f'Ran fit_file', 'data_target': str(fnames)})
 
         base_name = pathlib.Path(fnames[0]).stem + "_memmap_"
+        if extension == '.zarr' or is_zarr_path(fnames[0]):
+            # claude_patched_caiman (zarr): a store written by caiman.save_zarr
+            Yr_zarr, dims, T = load_zarr(fnames[0])
+            self.mmap_file = fnames[0]
+            self.fit(Yr_zarr.images(), indices=indices)
+            return
         if extension == '.mmap':
             fname_new = fnames[0]
             Yr, dims, T = caiman.mmapping.load_memmap(fnames[0])
@@ -313,8 +320,22 @@ class CNMF(object):
         if len(indices) < len(images.shape):
             indices = indices + [slice(None)]*(len(images.shape) - len(indices))
 
+        # claude_patched_caiman (zarr): a movie written by caiman.save_zarr stands in for the memmap
+        if isinstance(images, ZarrYr):
+            raise TypeError('CNMF.fit takes the (T, d1, d2) view of a zarr movie: pass Yr.images()')
+        zarr_input = isinstance(images, ZarrImages)
+        if zarr_input and self.params.get('patch', 'rf') is None:
+            # Without patches CNMF works on the whole movie at once: read it into memory, in the
+            # layout of the memmap view. Like any in-memory input this then runs in one process.
+            self.mmap_file = images.filename
+            images = images.to_memory()
+            zarr_input = False
+
         dims_orig = images.shape[1:]
-        dims_sliced = images[tuple(indices)].shape[1:]
+        if zarr_input:
+            dims_sliced = images.sliced_shape(indices)[1:]
+        else:
+            dims_sliced = images[tuple(indices)].shape[1:]
         is_sliced = (dims_orig != dims_sliced)
         if self.params.get('patch', 'rf') is None and (is_sliced or 'ndarray' in str(type(images))):
             images = images[tuple(indices)]
@@ -324,10 +345,15 @@ class CNMF(object):
         T = images.shape[0]
         self.params.set('online', {'init_batch': T})
         self.dims = images.shape[1:]
-        Y = np.transpose(images, list(range(1, len(self.dims) + 1)) + [0])
-        Yr = np.transpose(np.reshape(images, (T, -1), order='F'))
-        if np.isfortran(Yr):
-            raise Exception('The file is in F order, it should be in C order (see save_memmap function)')
+        if zarr_input:
+            Y = None  # only the single-patch branch uses Y, and zarr input never reaches it
+            Yr = images.Yr  # lazy (d, T) view: merging needs its shape, compute_W reads it
+            self.mmap_file = images.filename
+        else:
+            Y = np.transpose(images, list(range(1, len(self.dims) + 1)) + [0])
+            Yr = np.transpose(np.reshape(images, (T, -1), order='F'))
+            if np.isfortran(Yr):
+                raise Exception('The file is in F order, it should be in C order (see save_memmap function)')
 
         logger.info((T,) + self.dims)
 
@@ -444,9 +470,16 @@ class CNMF(object):
                 logger.info(
                     ('Setting the stride to 10% of 2*rf automatically:' + str(self.params.get('patch', 'stride'))))
 
-            if not isinstance(images, np.memmap):
+            if not isinstance(images, np.memmap) and not zarr_input:
                 raise Exception(
                     'You need to provide a memory mapped file as input if you use patches!!')
+            if zarr_input and not (self.params.get('init', 'center_psf') and
+                                   self.params.get('patch', 'nb_patch') == 0):
+                # the other branches below hand Yr to update_spatial/update_temporal, whose
+                # parallel workers reopen it with load_memmap
+                raise NotImplementedError(
+                    'zarr input supports CNMF-E with patches and nb_patch=0 (the 1p setup); '
+                    'use a memmap for other configurations')
 
             # We sometimes need to investigate what changes between before run_CNMF_patches and after that/before we update
             # components. This code block here is ready to uncomment for such debugging.

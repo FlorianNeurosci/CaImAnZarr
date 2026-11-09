@@ -1937,6 +1937,10 @@ def compute_W(Y, A, C, dims, radius, data_fits_in_memory=True, ssub=1, tsub=1, p
         # no parallelization over pixels if already processing patches in parallel
         parallel = False
 
+    if isinstance(Y, caiman.zarr_store.ZarrYr):
+        # claude_patched_caiman (zarr): the ring model needs the whole residual in memory
+        Y = np.asarray(Y)
+
     T = Y.shape[1]
     d1 = (dims[0] - 1) // ssub + 1
     d2 = (dims[1] - 1) // ssub + 1

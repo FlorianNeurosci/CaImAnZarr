@@ -14,6 +14,7 @@ import time
 
 from caiman.cluster import extract_patch_coordinates
 from caiman.mmapping import load_memmap
+from caiman.zarr_store import is_zarr_path, load_zarr
 
 def cnmf_patches(args_in):
     """Function that is run for each patches
@@ -77,7 +78,11 @@ def cnmf_patches(args_in):
     logger.debug(name_log + ' START')
 
     logger.debug(name_log + ' Read file')
-    Yr, dims, timesteps = load_memmap(file_name)
+    zarr_input = is_zarr_path(file_name)  # claude_patched_caiman (zarr)
+    if zarr_input:
+        Yr, dims, timesteps = load_zarr(file_name)
+    else:
+        Yr, dims, timesteps = load_memmap(file_name)
 
     # slicing array (takes the min and max index in n-dimensional space and
     # cuts the box they define)
@@ -90,11 +95,16 @@ def cnmf_patches(args_in):
     # insert slice for timesteps, equivalent to :
     slices.insert(0, slice(timesteps))
 
-    images = np.reshape(Yr.T, [timesteps] + list(dims), order='F')
-    if params.get('patch', 'in_memory'):
-        images = np.array(images[tuple(slices)], dtype=np.float32)
+    if zarr_input:
+        # reads only this patch's pixels; same values and layout as the in_memory copy below
+        # (a zarr store cannot be viewed lazily, so in_memory=False also reads the patch)
+        images = Yr.images()[tuple(slices)]
     else:
-        images = images[slices]
+        images = np.reshape(Yr.T, [timesteps] + list(dims), order='F')
+        if params.get('patch', 'in_memory'):
+            images = np.array(images[tuple(slices)], dtype=np.float32)
+        else:
+            images = images[slices]
 
     logger.debug(name_log+'file loaded')
 

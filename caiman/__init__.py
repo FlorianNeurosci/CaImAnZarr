@@ -8,5 +8,6 @@ from caiman.cluster import start_server, stop_server
 from caiman.keras_model_arch import keras_cnn_model_from_pickle
 from caiman.mmapping import load_memmap, save_memmap, save_memmap_each, save_memmap_join
 from caiman.summary_images import local_correlations
+from caiman.zarr_store import load_zarr, save_zarr
 
 __version__ = importlib.metadata.version('caiman')
