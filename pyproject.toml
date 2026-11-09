@@ -48,7 +48,7 @@ dependencies = [
   "tifffile",
   "tqdm",
   "yapf",
-  "zarr"
+  "zarr >= 3"
 ]
 
 [project.optional-dependencies]
